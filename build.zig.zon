@@ -1,0 +1,16 @@
+.{
+    .name = .deque_zig,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+
+    .paths = .{
+        "src",
+        "test",
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE",
+        "README.md",
+    },
+
+    .fingerprint = 0x924e036e3c205617, // Changing this has security and trust implications.
+}

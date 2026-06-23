@@ -1,15 +1,29 @@
-const Builder = @import("std").build.Builder;
+const std = @import("std");
 
-pub fn build(b: *Builder) void {
-    const mode = b.standardReleaseOptions();
-    const lib = b.addStaticLibrary("deque", "src/deque.zig");
-    lib.setBuildMode(mode);
-    lib.install();
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
-    var main_tests = b.addTest("test/test.zig");
-    main_tests.addPackagePath("deque", "src/deque.zig");
-    main_tests.setBuildMode(mode);
+    const mod = b.addModule("deque", .{
+        .root_source_file = b.path("src/deque.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
-    const test_step = b.step("test", "run library tests");
-    test_step.dependOn(&main_tests.step);
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addImport("deque", mod);
+
+    const test_exe = b.addTest(.{
+        .root_module = test_mod,
+    });
+
+    const test_cmd = b.addRunArtifact(test_exe);
+
+    const test_step = b.step("test", "Run the tests.");
+
+    test_step.dependOn(&test_cmd.step);
 }
