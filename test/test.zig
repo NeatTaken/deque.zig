@@ -4,7 +4,7 @@
 //  under the terms of the MIT license. See LICENSE for details.
 //
 
-usingnamespace @import("deque");
+const deque = @import("deque");
 const std = @import("std");
 
 const Thread = std.Thread;
@@ -12,7 +12,7 @@ const AMOUNT: usize = 10000;
 
 test "single-threaded" {
     const S = struct {
-        fn task(stealer: Stealer(usize, 32)) void {
+        fn task(stealer: deque.Stealer(usize, 32)) void {
             var left: usize = AMOUNT;
             while (stealer.steal()) |i| {
                 std.testing.expectEqual(i + left, AMOUNT);
@@ -23,13 +23,13 @@ test "single-threaded" {
         }
     };
 
-    var slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
+    const slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
     defer std.heap.page_allocator.free(slice);
-    var fba = std.heap.ThreadSafeFixedBufferAllocator.init(slice);
-    var alloc = &fba.allocator;
+    var fba = std.heap.FixedBufferAllocator.init(slice);
+    const alloc = fba.allocator();
 
-    var deque = try Deque(usize, 32).new(alloc);
-    defer deque.deinit();
+    var deque_test = try deque.Deque(usize, 32).new(alloc);
+    defer deque_test.deinit();
 
     var i: usize = 0;
     const worker = deque.worker();
@@ -43,7 +43,7 @@ test "single-threaded" {
 
 test "single-threaded-no-prealloc" {
     const S = struct {
-        fn task(stealer: Stealer(usize, 0)) void {
+        fn task(stealer: deque.Stealer(usize, 0)) void {
             var left: usize = AMOUNT;
             while (stealer.steal()) |i| {
                 std.testing.expectEqual(i + left, AMOUNT);
@@ -54,13 +54,13 @@ test "single-threaded-no-prealloc" {
         }
     };
 
-    var slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
+    const slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
     defer std.heap.page_allocator.free(slice);
-    var fba = std.heap.ThreadSafeFixedBufferAllocator.init(slice);
-    var alloc = &fba.allocator;
+    var fba = std.heap.FixedBufferAllocator.init(slice);
+    const alloc = fba.allocator();
 
-    var deque = try Deque(usize, 0).new(alloc);
-    defer deque.deinit();
+    var deque_test = try deque.Deque(usize, 0).new(alloc);
+    defer deque_test.deinit();
 
     var i: usize = 0;
     const worker = deque.worker();
@@ -75,7 +75,7 @@ test "single-threaded-no-prealloc" {
 test "multiple-threads" {
     const S = struct {
         const Self = @This();
-        stealer: Stealer(usize, 32),
+        stealer: deque.Stealer(usize, 32),
         data: [AMOUNT]usize = [_]usize{0} ** AMOUNT,
 
         fn task(self: *Self) void {
@@ -86,19 +86,19 @@ test "multiple-threads" {
         }
 
         fn verify(self: Self) void {
-            for (self.data[0..]) |*i, idx| {
+            for (self.data[0..], 0..) |*i, idx| {
                 std.testing.expectEqual(idx, i.*);
             }
         }
     };
 
-    var slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
+    const slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
     defer std.heap.page_allocator.free(slice);
-    var fba = std.heap.ThreadSafeFixedBufferAllocator.init(slice);
-    var alloc = &fba.allocator;
+    var fba = std.heap.FixedBufferAllocator.init(slice);
+    const alloc = fba.allocator();
 
-    var deque = try Deque(usize, 32).new(alloc);
-    defer deque.deinit();
+    var deque_test = try deque.Deque(usize, 32).new(alloc);
+    defer deque_test.deinit();
 
     var i: usize = 0;
     const worker = deque.worker();
@@ -106,7 +106,7 @@ test "multiple-threads" {
         try worker.push(i);
     }
 
-    var threads: [4]*std.Thread = undefined;
+    const threads: [4]*std.Thread = undefined;
     var ctx = S{
         .stealer = deque.stealer(),
     };
@@ -122,7 +122,7 @@ test "multiple-threads" {
 test "multiple-threads-no-prealloc" {
     const S = struct {
         const Self = @This();
-        stealer: Stealer(usize, 0),
+        stealer: deque.Stealer(usize, 0),
         data: [AMOUNT]usize = [_]usize{0} ** AMOUNT,
 
         fn task(self: *Self) void {
@@ -133,19 +133,19 @@ test "multiple-threads-no-prealloc" {
         }
 
         fn verify(self: Self) void {
-            for (self.data[0..]) |*i, idx| {
+            for (self.data[0..], 0..) |*i, idx| {
                 std.testing.expectEqual(idx, i.*);
             }
         }
     };
 
-    var slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
+    const slice = try std.heap.page_allocator.alloc(u8, 1 << 24);
     defer std.heap.page_allocator.free(slice);
-    var fba = std.heap.ThreadSafeFixedBufferAllocator.init(slice);
-    var alloc = &fba.allocator;
+    var fba = std.heap.FixedBufferAllocator.init(slice);
+    const alloc = fba.allocator();
 
-    var deque = try Deque(usize, 0).new(alloc);
-    defer deque.deinit();
+    var deque_test = try deque.Deque(usize, 0).new(alloc);
+    defer deque_test.deinit();
 
     var i: usize = 0;
     const worker = deque.worker();
@@ -153,7 +153,7 @@ test "multiple-threads-no-prealloc" {
         try worker.push(i);
     }
 
-    var threads: [4]*std.Thread = undefined;
+    const threads: [4]*std.Thread = undefined;
     var ctx = S{
         .stealer = deque.stealer(),
     };
