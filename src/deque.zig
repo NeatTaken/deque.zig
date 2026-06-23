@@ -2,140 +2,169 @@
 //
 //  This library is free software; you can redistribute it and/or modify it
 //  under the terms of the MIT license. See LICENSE for details.
-//
 
 const std = @import("std");
-const builtin = @import("builtin");
-
-const Atomic = @import("atomic.zig").Atomic;
-const SegmentedList = std.SegmentedList;
 const Allocator = std.mem.Allocator;
+const Atomic = std.atomic.Value;
 
-pub fn Deque(comptime T: type, comptime P: usize) type {
+fn CircularBuffer(comptime T: type) type {
     return struct {
         const Self = @This();
-        const List = SegmentedList(T, P);
 
-        allocator: *Allocator,
-        list: Atomic(*List),
+        buf: []T,
+
+        fn init(allocator: Allocator, cap: usize) !Self {
+            std.debug.assert(std.math.isPowerOfTwo(cap));
+            return .{ .buf = try allocator.alloc(T, cap) };
+        }
+
+        fn deinit(self: *Self, allocator: Allocator) void {
+            allocator.free(self.buf);
+        }
+
+        inline fn mask(self: *const Self, i: isize) usize {
+            return @intCast(i & @as(isize, @intCast(self.buf.len - 1)));
+        }
+
+        fn at(self: *const Self, i: isize) *T {
+            return &self.buf[self.mask(i)];
+        }
+
+        fn put(self: *Self, i: isize, val: T) void {
+            self.buf[self.mask(i)] = val;
+        }
+
+        fn grow(self: *const Self, allocator: Allocator, top: isize, bottom: isize) !Self {
+            var next = try Self.init(allocator, self.buf.len * 2);
+            var i: isize = top;
+            while (i < bottom) : (i += 1) {
+                next.put(i, self.at(i).*);
+            }
+            return next;
+        }
+    };
+}
+
+pub fn Deque(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        const Buffer = CircularBuffer(T);
+        const INITIAL_CAP = 32;
+
+        allocator: Allocator,
+        buffer: Atomic(*Buffer),
         bottom: Atomic(isize),
         top: Atomic(isize),
 
-        pub fn new(allocator: *Allocator) !Self {
-            var list = try allocator.create(List);
-            list.* = List.init(allocator);
-            return Self{
-                .list = Atomic(*List).init(list),
+        pub fn init(allocator: Allocator, ) !Self {
+            const buf = try allocator.create(Buffer);
+            buf.* = try Buffer.init(allocator, INITIAL_CAP);
+            return .{
+                .allocator = allocator,
+                .buffer = Atomic(*Buffer).init(buf),
                 .bottom = Atomic(isize).init(0),
                 .top = Atomic(isize).init(0),
-                .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *Self) void {
-            self.list.load(.Monotonic).deinit();
+            const buf = self.buffer.load(.monotonic);
+            buf.deinit(self.allocator);
+            self.allocator.destroy(buf);
         }
 
-        pub fn worker(self: *Self) Worker(T, P) {
-            return Worker(T, P){
-                .deque = self,
-            };
+        pub fn worker(self: *Self) Worker(T) {
+            return .{ .deque = self };
         }
 
-        pub fn stealer(self: *Self) Stealer(T, P) {
-            return Stealer(T, P){
-                .deque = self,
-            };
+        pub fn stealer(self: *Self) Stealer(T) {
+            return .{ .deque = self };
         }
 
         fn push(self: *Self, item: T) !void {
-            const bottom = self.bottom.load(.Monotonic);
-            var list = self.list.load(.Monotonic);
+            const b = self.bottom.load(.monotonic);
+            const t = self.top.load(.acquire);
+            var buf = self.buffer.load(.monotonic);
 
-            try list.push(item);
-            @fence(.Release);
-            self.bottom.store(bottom +% 1, .Monotonic);
+            if (b -% t >= @as(isize, @intCast(buf.buf.len - 1))) {
+                const old = buf;
+                const new_buf = try self.allocator.create(Buffer);
+                new_buf.* = try old.grow(self.allocator, t, b);
+                self.buffer.store(new_buf, .release);
+                buf = new_buf;
+                //old.deinit(self.allocator);   // <-- NOT SAFE WITH CONCURRENT STEALERS
+                //self.allocator.destroy(old);  //     TANK THE LEAK FOR NOW
+            }
+
+            buf.put(b, item);
+            self.bottom.store(b +% 1, .release);
         }
 
         fn pop(self: *Self) ?T {
-            var bottom = self.bottom.load(.Monotonic);
-            var top = self.top.load(.Monotonic);
+            var b = self.bottom.load(.monotonic);
+            const buf = self.buffer.load(.monotonic);
 
-            if (bottom -% top <= 0) {
-                return null;
-            }
+            b -%= 1;
+            self.bottom.store(b, .seq_cst);
+            const t = self.top.load(.seq_cst);
 
-            bottom -%= 1;
-            self.bottom.store(bottom, .Monotonic);
-            @fence(.SeqCst);
-
-            top = self.top.load(.Monotonic);
-
-            const size = bottom -% top;
+            const size = b -% t;
             if (size < 0) {
-                self.bottom.store(bottom +% 1, .Monotonic);
+                self.bottom.store(b +% 1, .monotonic);
                 return null;
             }
 
-            const list = self.list.load(.Monotonic);
-            var data = list.at(bottom);
-
-            if (size != 0) {
-                return data.*;
+            const val = buf.at(b).*;
+            if (size == 0) {
+                if (self.top.cmpxchgStrong(t, t +% 1, .seq_cst, .monotonic) != null) {
+                    self.bottom.store(b +% 1, .monotonic);
+                    return null;
+                }
+                self.bottom.store(b +% 1, .monotonic);
             }
 
-            if (self.top.cmpSwap(top, top +% 1, .SeqCst) == top) {
-                self.bottom.store(top +% 1, .Monotonic);
-                return data.*;
-            } else {
-                self.bottom.store(top +% 1, .Monotonic);
-                return null;
-            }
+            return val;
         }
 
-        pub fn steal(self: *Self) ?T {
+        fn steal(self: *Self) ?T {
             while (true) {
-                const top = self.top.load(.Acquire);
-                @fence(.SeqCst);
-                const bottom = self.bottom.load(.Acquire);
+                const t = self.top.load(.seq_cst);
+                const b = self.bottom.load(.seq_cst);
+                if (b -% t <= 0) return null;
 
-                const size = bottom -% top;
-                if (size <= 0) return null;
+                const buf = self.buffer.load(.acquire);
+                const val = buf.at(t).*;
 
-                const list = self.list.load(.Acquire);
-                const data = list.at(@intCast(usize, top));
-
-                if (self.top.cmpSwap(top, top +% 1, .SeqCst) == top) {
-                    return data.*;
-                } else {
+                if (self.top.cmpxchgWeak(t, t +% 1, .seq_cst, .monotonic) != null) {
+                    std.atomic.spinLoopHint();
                     continue;
                 }
+
+                return val;
             }
         }
     };
 }
 
-pub fn Worker(comptime T: type, comptime P: usize) type {
+pub fn Worker(comptime T: type) type {
     return struct {
         const Self = @This();
-
-        deque: *Deque(T, P),
+        deque: *Deque(T),
 
         pub fn push(self: *const Self, item: T) !void {
             try self.deque.push(item);
         }
 
-        pub fn pop(self: *const Self, item: T) ?T {
+        pub fn pop(self: *const Self) ?T {
             return self.deque.pop();
         }
     };
 }
 
-pub fn Stealer(comptime T: type, comptime P: usize) type {
+pub fn Stealer(comptime T: type) type {
     return struct {
         const Self = @This();
-
-        deque: *Deque(T, P),
+        deque: *Deque(T),
 
         pub fn steal(self: *const Self) ?T {
             return self.deque.steal();
